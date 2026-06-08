@@ -1,6 +1,19 @@
 import { HABIT_COLORS, STUDENT_TEMPLATES } from "./constants.js";
 import { toDateKey } from "./date-utils.js";
 
+export const USER_NAME_STORAGE_KEY = "momentum-habit-tracker:name";
+export const HABIT_STATE_STORAGE_KEY = "momentum-habit-tracker:state";
+
+function getLocalStorage() {
+  if (typeof window === "undefined") return null;
+
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+}
+
 export function createId() {
   return crypto.randomUUID();
 }
@@ -38,6 +51,16 @@ export function createStarterState(settings = {}) {
   };
 }
 
+function normalizeAchievements(achievements) {
+  if (!achievements || typeof achievements !== "object") return {};
+
+  return Object.fromEntries(
+    Object.entries(achievements)
+      .filter(([id, unlockedAt]) => id && typeof unlockedAt === "string")
+      .map(([id, unlockedAt]) => [String(id), unlockedAt]),
+  );
+}
+
 function normalizeHabit(habit, index) {
   return {
     id: String(habit.id || createId()),
@@ -49,12 +72,18 @@ function normalizeHabit(habit, index) {
   };
 }
 
-export function normalizeState(input) {
+export function normalizeState(input, settings = {}) {
   const raw = input?.data || input || {};
-  const fallback = createStarterState();
+  const fallback = createStarterState(raw.settings || settings);
   const habits = Array.isArray(raw.habits) ? raw.habits.map(normalizeHabit) : fallback.habits;
   const knownIds = new Set(habits.map((habit) => habit.id));
   const completions = {};
+  const theme =
+    raw.settings?.theme === "dark" || raw.settings?.theme === "light"
+      ? raw.settings.theme
+      : settings.theme === "dark"
+        ? "dark"
+        : "light";
 
   if (raw.completions && typeof raw.completions === "object") {
     Object.entries(raw.completions).forEach(([dateKey, day]) => {
@@ -72,12 +101,47 @@ export function normalizeState(input) {
     version: 1,
     createdAt: raw.createdAt || fallback.createdAt,
     settings: {
-      theme: raw.settings?.theme === "dark" ? "dark" : "light",
+      theme,
     },
     habits,
     completions,
-    achievements: {},
+    achievements: normalizeAchievements(raw.achievements),
   };
+}
+
+export function loadStoredName() {
+  const storage = getLocalStorage();
+  if (!storage) return "";
+
+  return (storage.getItem(USER_NAME_STORAGE_KEY) || "").trim();
+}
+
+export function saveStoredName(name) {
+  const storage = getLocalStorage();
+  const normalizedName = String(name || "").trim();
+  if (!storage || !normalizedName) return normalizedName;
+
+  storage.setItem(USER_NAME_STORAGE_KEY, normalizedName);
+  return normalizedName;
+}
+
+export function loadStoredState(settings = {}) {
+  const storage = getLocalStorage();
+  if (!storage) return createStarterState(settings);
+
+  try {
+    const rawState = storage.getItem(HABIT_STATE_STORAGE_KEY);
+    return rawState ? normalizeState(JSON.parse(rawState), settings) : createStarterState(settings);
+  } catch {
+    return createStarterState(settings);
+  }
+}
+
+export function saveStoredState(state) {
+  const storage = getLocalStorage();
+  if (!storage) return;
+
+  storage.setItem(HABIT_STATE_STORAGE_KEY, JSON.stringify(normalizeState(state)));
 }
 
 export function serializeBackup(state) {

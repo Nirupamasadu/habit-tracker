@@ -89,14 +89,14 @@ p {
   margin-top: 0;
 }
 
-.auth-screen {
+.welcome-screen {
   min-height: 100vh;
   display: grid;
   place-items: center;
   padding: 24px;
 }
 
-.auth-card {
+.welcome-card {
   width: min(560px, 100%);
   padding: 28px;
   border: 1px solid var(--line);
@@ -106,23 +106,44 @@ p {
   backdrop-filter: blur(22px);
 }
 
-.auth-brand {
+.welcome-brand {
   margin-bottom: 54px;
 }
 
-.auth-copy {
+.welcome-copy {
   margin-bottom: 24px;
 }
 
-.auth-copy h1 {
+.welcome-copy h1 {
   margin-bottom: 12px;
 }
 
-.auth-copy p:not(.eyebrow) {
+.welcome-copy p:not(.eyebrow) {
   color: var(--muted);
 }
 
-.google-button {
+.welcome-form {
+  display: grid;
+  gap: 10px;
+}
+
+.welcome-form label {
+  color: var(--muted);
+  font-size: 0.9rem;
+  font-weight: 900;
+}
+
+.welcome-form input {
+  width: 100%;
+  min-height: 50px;
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  outline: 0;
+  background: var(--surface-strong);
+}
+
+.welcome-button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -137,12 +158,12 @@ p {
   font-weight: 900;
 }
 
-.google-button svg {
+.welcome-button svg {
   width: 20px;
   height: 20px;
 }
 
-.auth-message {
+.welcome-message {
   min-height: 24px;
   margin: 14px 0 0;
   color: var(--danger);
@@ -150,12 +171,12 @@ p {
   font-weight: 800;
 }
 
-.auth-message.ok {
+.welcome-message.ok {
   color: var(--teal);
 }
 
-body.authenticated .auth-screen,
-.auth-screen[aria-hidden="true"],
+body.dashboard-ready .welcome-screen,
+.welcome-screen[aria-hidden="true"],
 .app-shell[aria-hidden="true"] {
   display: none;
 }

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
       name="description"
-      content="A Supabase-powered student habit tracker calendar with streaks, analytics, templates, and backup tools."
+      content="A student habit tracker calendar with streaks, analytics, templates, local persistence, and backup tools."
     />
     <meta name="theme-color" content="#f6f8fc" />
     <title>Momentum Calendar | Student Habit Tracker</title>
@@ -21,9 +21,9 @@
     <script type="module" src="scripts/app.js"></script>
   </head>
   <body>
-    <section class="auth-screen" id="authScreen" aria-labelledby="authTitle">
-      <div class="auth-card">
-        <a class="brand auth-brand" href="#" aria-label="Momentum Calendar home">
+    <section class="welcome-screen" id="welcomeScreen" aria-labelledby="welcomeTitle">
+      <div class="welcome-card">
+        <a class="brand welcome-brand" href="#" aria-label="Momentum Calendar home">
           <img src="assets/app-icon.svg" alt="" />
           <span>
             <strong>Momentum</strong>
@@ -31,21 +31,29 @@
           </span>
         </a>
 
-        <div class="auth-copy">
-          <p class="eyebrow">Supabase Auth</p>
-          <h1 id="authTitle">Sign in to sync your habits.</h1>
-          <p>
-            Use your Google account to keep your calendar, completions, and
-            streaks protected in your Supabase project.
-          </p>
+        <div class="welcome-copy">
+          <p class="eyebrow">Local habit tracker</p>
+          <h1 id="welcomeTitle">Welcome to Momentum Habit Tracker</h1>
+          <p>Keep your calendar, completions, and streaks on this device.</p>
         </div>
 
-        <button class="google-button" id="googleSignIn" type="button">
-          <i data-lucide="log-in" aria-hidden="true"></i>
-          <span>Continue with Google</span>
-        </button>
+        <form class="welcome-form" id="welcomeForm">
+          <label for="studentName">Enter your name:</label>
+          <input
+            id="studentName"
+            name="studentName"
+            type="text"
+            autocomplete="name"
+            maxlength="60"
+            required
+          />
+          <button class="welcome-button" id="continueButton" type="submit">
+            <i data-lucide="arrow-right" aria-hidden="true"></i>
+            <span>Continue</span>
+          </button>
+        </form>
 
-        <p class="auth-message" id="authMessage" role="alert"></p>
+        <p class="welcome-message" id="welcomeMessage" role="alert"></p>
       </div>
     </section>
 
@@ -59,37 +67,10 @@
           </span>
         </a>
 
-<<<<<<< HEAD
         <div class="topbar-actions" aria-label="App actions">
           <label class="search-box" for="searchHabits">
             <i data-lucide="search" aria-hidden="true"></i>
             <input id="searchHabits" type="search" placeholder="Search habits" />
-=======
-        <form id="studentForm" novalidate>
-          <div class="signup-fields">
-            <label>
-              Full name
-              <input
-                id="full_name"
-                name="full_name"
-                type="text"
-                autocomplete="name"
-                placeholder="Enter full name"
-              />
-            </label>
-          </div>
-
-          <label>
-            Email address
-            <input
-              id="email"
-              name="email"
-              type="email"
-              autocomplete="email"
-              placeholder="student@example.com"
-              required
-            />
->>>>>>> 4a0bba7be0b971d62af01a70d4b1a5fd1b52f468
           </label>
 
           <select id="habitFilter" aria-label="Filter habits">
@@ -115,15 +96,15 @@
 
           <div class="user-area">
             <div class="user-chip" id="userChip">
-              <img id="userAvatar" src="assets/app-icon.svg" alt="" />
+                <img id="userAvatar" src="assets/app-icon.svg" alt="" />
               <span>
                 <strong id="userName">Student</strong>
-                <small id="userEmail">Signed in</small>
+                <small id="userEmail">Local profile</small>
               </span>
             </div>
-            <button class="action-button" id="logoutButton" type="button">
-              <i data-lucide="log-out" aria-hidden="true"></i>
-              <span>Logout</span>
+            <button class="action-button" id="changeNameButton" type="button">
+              <i data-lucide="pencil" aria-hidden="true"></i>
+              <span>Change name</span>
             </button>
           </div>
         </div>
@@ -132,7 +113,7 @@
       <main>
         <section class="focus-strip" aria-labelledby="appTitle">
           <div class="focus-copy">
-            <p class="eyebrow">Supabase habit tracker</p>
+            <p class="eyebrow">Local habit tracker</p>
             <h1 id="appTitle">Make every study day visible.</h1>
             <p id="dailyQuote">
               Small efforts compound when you can see them.
@@ -294,7 +275,7 @@
               </div>
               <span class="sync-pill">
                 <i data-lucide="database" aria-hidden="true"></i>
-                Supabase
+                Local storage
               </span>
             </div>
 
@@ -356,7 +337,6 @@
           </section>
         </div>
 
-<<<<<<< HEAD
         <section class="panel streak-panel" aria-labelledby="streakTitle">
           <div class="section-head">
             <div>
@@ -368,34 +348,12 @@
         </section>
       </main>
     </div>
-=======
-        <div class="dashboard-grid">
-          <div>
-            <span>Member since</span>
-            <strong id="profileCreatedAt">Just now</strong>
-          </div>
-          <div>
-            <span>Auth provider</span>
-            <strong id="profileProvider">Supabase Auth</strong>
-          </div>
-          <div>
-            <span>Account status</span>
-            <strong class="success">Active</strong>
-          </div>
-          <div>
-            <span>Profile sync</span>
-            <strong>Saved</strong>
-          </div>
-        </div>
-      </section>
-    </main>
->>>>>>> 4a0bba7be0b971d62af01a70d4b1a5fd1b52f468
 
     <div class="toast-stack" id="toastStack" aria-live="polite"></div>
     <div class="loading-overlay" id="loadingOverlay" aria-live="polite" aria-hidden="true">
       <div>
         <span class="loader"></span>
-        <strong id="loadingText">Syncing Supabase</strong>
+        <strong id="loadingText">Saving locally</strong>
       </div>
     </div>
     <div class="confetti-root" id="confettiRoot" aria-hidden="true"></div>

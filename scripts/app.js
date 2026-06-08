@@ -12,22 +12,16 @@ import {
   toDateKey,
 } from "./date-utils.js";
 import {
-  describeSupabaseClientConfig,
-  getAuthStorageSnapshot,
-  getOAuthRedirectContext,
-  getSupabaseAuthStorageInfo,
-  hasSupabaseConfig,
-  supabase,
-} from "./supabase-client.js";
-import {
-  createHabitRow,
-  deleteHabitRow,
-  ensureStarterHabits,
-  replaceUserStateFromBackup,
-  setCompletionRow,
-  updateHabitRow,
-} from "./supabase-store.js";
-import { createEmptyState, normalizeState, serializeBackup } from "./storage.js";
+  createEmptyState,
+  createHabitFromTemplate,
+  createId,
+  loadStoredName,
+  loadStoredState,
+  normalizeState,
+  saveStoredName,
+  saveStoredState,
+  serializeBackup,
+} from "./storage.js";
 import {
   getCompletionRate,
   getConsistencyScore,
@@ -54,17 +48,17 @@ const app = {
   celebratedPerfectDays: new Set(),
   user: null,
   busy: false,
-  authLoadUserId: "",
 };
 
 const dom = {
   html: document.documentElement,
   body: document.body,
-  authScreen: document.querySelector("#authScreen"),
+  welcomeScreen: document.querySelector("#welcomeScreen"),
+  welcomeForm: document.querySelector("#welcomeForm"),
+  studentName: document.querySelector("#studentName"),
+  welcomeMessage: document.querySelector("#welcomeMessage"),
   appShell: document.querySelector("#appShell"),
-  googleSignIn: document.querySelector("#googleSignIn"),
-  authMessage: document.querySelector("#authMessage"),
-  logoutButton: document.querySelector("#logoutButton"),
+  changeNameButton: document.querySelector("#changeNameButton"),
   userName: document.querySelector("#userName"),
   userEmail: document.querySelector("#userEmail"),
   userAvatar: document.querySelector("#userAvatar"),
@@ -123,266 +117,6 @@ const dom = {
   confettiRoot: document.querySelector("#confettiRoot"),
 };
 
-const AUTH_LOG_PREFIX = "[auth]";
-const OAUTH_SEARCH_PARAMS = ["code", "error", "error_code", "error_description", "state", "type"];
-const OAUTH_HASH_PARAMS = [
-  "access_token",
-  "expires_at",
-  "expires_in",
-  "provider_refresh_token",
-  "provider_token",
-  "refresh_token",
-  "token_type",
-  ...OAUTH_SEARCH_PARAMS,
-];
-const SENSITIVE_URL_PARAMS = new Set([...OAUTH_SEARCH_PARAMS, ...OAUTH_HASH_PARAMS]);
-
-function summarizeError(error) {
-  if (!error) return null;
-
-  const serialized = {};
-
-  Object.getOwnPropertyNames(error).forEach((key) => {
-    serialized[key] = error[key];
-  });
-
-  return {
-    name: error?.name || "Error",
-    message: error?.message || String(error),
-    status: error?.status,
-    code: error?.code,
-    stack: error?.stack,
-    cause: error?.cause,
-    details: error?.details,
-    raw: serialized,
-  };
-}
-
-function summarizeAuthValue(value) {
-  if (!value) {
-    return {
-      present: false,
-      length: 0,
-      preview: null,
-    };
-  }
-
-  const text = String(value);
-  const preview = text.length <= 10 ? "[redacted]" : `${text.slice(0, 5)}...${text.slice(-4)}`;
-
-  return {
-    present: true,
-    length: text.length,
-    preview,
-  };
-}
-
-function summarizeSession(session) {
-  return {
-    hasSession: Boolean(session),
-    userId: session?.user?.id || null,
-    email: session?.user?.email || null,
-    expiresAt: session?.expires_at || null,
-    tokenType: session?.token_type || null,
-  };
-}
-
-function toConsolePayload(value) {
-  const seen = new WeakSet();
-
-  return JSON.parse(
-    JSON.stringify(value, (key, item) => {
-      if (item instanceof Error) return summarizeError(item);
-      if (typeof item === "object" && item !== null) {
-        if (seen.has(item)) return "[Circular]";
-        seen.add(item);
-      }
-
-      return item;
-    }),
-  );
-}
-
-function logAuthStep(step, detail = {}) {
-  console.info(`${AUTH_LOG_PREFIX} ${step}`, toConsolePayload(detail));
-}
-
-function logAuthError(step, error, detail = {}) {
-  console.error(`${AUTH_LOG_PREFIX} ${step}`, toConsolePayload({
-    ...detail,
-    error: summarizeError(error),
-  }));
-}
-
-function getHashParams(hash = window.location.hash) {
-  return new URLSearchParams(hash.replace(/^#/, ""));
-}
-
-function redactSensitiveUrl(value) {
-  try {
-    const url = new URL(value);
-
-    SENSITIVE_URL_PARAMS.forEach((key) => {
-      if (url.searchParams.has(key)) {
-        url.searchParams.set(key, summarizeAuthValue(url.searchParams.get(key)).preview);
-      }
-    });
-
-    if (url.hash) {
-      const hashParams = getHashParams(url.hash);
-      let hasSensitiveHashParam = false;
-
-      SENSITIVE_URL_PARAMS.forEach((key) => {
-        if (hashParams.has(key)) {
-          hasSensitiveHashParam = true;
-          hashParams.set(key, summarizeAuthValue(hashParams.get(key)).preview);
-        }
-      });
-
-      if (hasSensitiveHashParam) {
-        url.hash = hashParams.toString();
-      }
-    }
-
-    return url.toString();
-  } catch {
-    return "[invalid-url]";
-  }
-}
-
-function summarizeCurrentUrl() {
-  const url = new URL(window.location.href);
-  const hashParams = getHashParams();
-
-  return {
-    href: redactSensitiveUrl(window.location.href),
-    origin: url.origin,
-    host: url.host,
-    pathname: url.pathname,
-    searchKeys: Array.from(url.searchParams.keys()),
-    hashKeys: Array.from(hashParams.keys()),
-    codeParameter: summarizeAuthValue(url.searchParams.get("code")),
-    stateParameter: summarizeAuthValue(url.searchParams.get("state")),
-  };
-}
-
-function summarizeAuthorizeUrl(value, expectedRedirectTo) {
-  if (!value) {
-    return {
-      hasUrl: false,
-    };
-  }
-
-  try {
-    const url = new URL(value);
-    const redirectTo = url.searchParams.get("redirect_to");
-    const codeChallenge = url.searchParams.get("code_challenge");
-
-    return {
-      hasUrl: true,
-      href: redactSensitiveUrl(value),
-      origin: url.origin,
-      pathname: url.pathname,
-      provider: url.searchParams.get("provider"),
-      redirectTo,
-      redirectMatchesRequest: redirectTo === expectedRedirectTo,
-      hasCodeChallenge: Boolean(codeChallenge),
-      codeChallenge: summarizeAuthValue(codeChallenge),
-      codeChallengeMethod: url.searchParams.get("code_challenge_method"),
-    };
-  } catch (error) {
-    return {
-      hasUrl: true,
-      invalidUrl: true,
-      error: summarizeError(error),
-    };
-  }
-}
-
-function readPkceStorageState() {
-  const storageInfo = getSupabaseAuthStorageInfo();
-  const configuredStorage = getAuthStorageSnapshot(storageInfo.codeVerifierKey);
-
-  try {
-    const codeVerifier = storageInfo.codeVerifierKey
-      ? window.localStorage.getItem(storageInfo.codeVerifierKey)
-      : null;
-    const codeVerifierKeys = [];
-
-    for (let index = 0; index < window.localStorage.length; index += 1) {
-      const key = window.localStorage.key(index);
-      if (key?.includes("code-verifier")) {
-        codeVerifierKeys.push(key);
-      }
-    }
-
-    return {
-      storageAvailable: true,
-      storageKey: storageInfo.storageKey || null,
-      codeVerifierKey: storageInfo.codeVerifierKey || null,
-      configuredStorage,
-      hasExpectedCodeVerifier: Boolean(codeVerifier) || configuredStorage.values.some((item) => item.hasKey),
-      expectedCodeVerifier: summarizeAuthValue(codeVerifier),
-      codeVerifierKeys,
-    };
-  } catch (error) {
-    return {
-      storageAvailable: false,
-      storageKey: storageInfo.storageKey || null,
-      codeVerifierKey: storageInfo.codeVerifierKey || null,
-      configuredStorage,
-      error: summarizeError(error),
-    };
-  }
-}
-
-function readOAuthCallback() {
-  const url = new URL(window.location.href);
-  const hashParams = getHashParams();
-  const hasSearchCallback = OAUTH_SEARCH_PARAMS.some((key) => url.searchParams.has(key));
-  const hasHashCallback = OAUTH_HASH_PARAMS.some((key) => hashParams.has(key));
-
-  return {
-    code: url.searchParams.get("code"),
-    state: url.searchParams.get("state") || hashParams.get("state"),
-    accessToken: hashParams.get("access_token"),
-    refreshToken: hashParams.get("refresh_token"),
-    error: url.searchParams.get("error") || hashParams.get("error"),
-    errorCode: url.searchParams.get("error_code") || hashParams.get("error_code"),
-    errorDescription: url.searchParams.get("error_description") || hashParams.get("error_description"),
-    type: url.searchParams.get("type") || hashParams.get("type"),
-    hasCallback: hasSearchCallback || hasHashCallback,
-    hasHashTokens: Boolean(hashParams.get("access_token") || hashParams.get("refresh_token")),
-  };
-}
-
-function summarizeOAuthCallback(callback) {
-  return {
-    hasCallback: callback.hasCallback,
-    hasCode: Boolean(callback.code),
-    codeParameter: summarizeAuthValue(callback.code),
-    stateParameter: summarizeAuthValue(callback.state),
-    hasHashTokens: callback.hasHashTokens,
-    hasError: Boolean(callback.error),
-    error: callback.error || null,
-    errorCode: callback.errorCode || null,
-    errorDescription: callback.errorDescription || null,
-    type: callback.type || null,
-  };
-}
-
-function clearOAuthCallbackFromUrl() {
-  const url = new URL(window.location.href);
-  OAUTH_SEARCH_PARAMS.forEach((key) => url.searchParams.delete(key));
-  url.hash = "";
-  window.history.replaceState(window.history.state, document.title, url.toString());
-}
-
-function resetGoogleSignInButton() {
-  dom.googleSignIn.disabled = false;
-  dom.googleSignIn.querySelector("span").textContent = "Continue with Google";
-}
-
 function plural(value, noun) {
   return `${value} ${noun}${value === 1 ? "" : "s"}`;
 }
@@ -400,54 +134,74 @@ function refreshIcons() {
   window.lucide?.createIcons();
 }
 
-function setBusy(isBusy, message = "Syncing Supabase") {
+function setBusy(isBusy, message = "Saving locally") {
   app.busy = isBusy;
   dom.body.classList.toggle("is-busy", isBusy);
   dom.loadingOverlay.setAttribute("aria-hidden", String(!isBusy));
   dom.loadingText.textContent = message;
 }
 
-function setAuthMessage(message, isError = true) {
-  dom.authMessage.textContent = message;
-  dom.authMessage.classList.toggle("ok", !isError);
+function persistState() {
+  saveStoredState(app.state);
 }
 
-function showLogin(message = "") {
-  logAuthStep("ui:show-login", { hasMessage: Boolean(message), message });
+function setWelcomeMessage(message, isError = true) {
+  dom.welcomeMessage.textContent = message;
+  dom.welcomeMessage.classList.toggle("ok", !isError);
+}
+
+function showWelcome(message = "", name = app.user?.name || loadStoredName()) {
   app.user = null;
-  app.authLoadUserId = "";
-  app.state = createEmptyState({ theme: app.state.settings.theme });
-  resetGoogleSignInButton();
-  dom.body.classList.remove("authenticated");
-  dom.authScreen.removeAttribute("aria-hidden");
+  dom.body.classList.remove("dashboard-ready");
+  dom.welcomeScreen.removeAttribute("aria-hidden");
   dom.appShell.setAttribute("aria-hidden", "true");
-  setAuthMessage(message, Boolean(message));
+  dom.studentName.value = name || "";
+  setWelcomeMessage(message, Boolean(message));
   applyTheme();
   refreshIcons();
+  window.setTimeout(() => dom.studentName.focus(), 0);
 }
 
 function showApp() {
-  logAuthStep("ui:show-app", summarizeSession({ user: app.user }));
-  dom.body.classList.add("authenticated");
-  dom.authScreen.setAttribute("aria-hidden", "true");
+  dom.body.classList.add("dashboard-ready");
+  dom.welcomeScreen.setAttribute("aria-hidden", "true");
   dom.appShell.removeAttribute("aria-hidden");
 }
 
-function getUserDisplay(user) {
-  const metadata = user?.user_metadata || {};
-  const email = user?.email || "";
-  const name = metadata.full_name || metadata.name || email.split("@")[0] || "Student";
-  const avatar = metadata.avatar_url || metadata.picture || "assets/app-icon.svg";
-
-  return { name, email, avatar };
+function renderUser() {
+  const name = app.user?.name || "Student";
+  dom.userName.textContent = name;
+  dom.userEmail.textContent = "Local profile";
+  dom.userAvatar.src = "assets/app-icon.svg";
+  dom.userAvatar.alt = "";
 }
 
-function renderUser() {
-  const display = getUserDisplay(app.user);
-  dom.userName.textContent = display.name;
-  dom.userEmail.textContent = display.email;
-  dom.userAvatar.src = display.avatar;
-  dom.userAvatar.alt = `${display.name} avatar`;
+function openDashboard(name) {
+  app.user = { name };
+  app.state = loadStoredState({ theme: app.state.settings.theme || initialTheme });
+  showApp();
+  renderUser();
+  resetHabitForm();
+  renderWithAchievements({ silent: true });
+}
+
+function handleWelcomeSubmit(event) {
+  event.preventDefault();
+
+  const name = dom.studentName.value.trim();
+  if (!name) {
+    setWelcomeMessage("Enter your name to continue.");
+    dom.studentName.focus();
+    return;
+  }
+
+  const savedName = saveStoredName(name);
+  setWelcomeMessage("", false);
+  openDashboard(savedName);
+}
+
+function showNameEditor() {
+  showWelcome("", app.user?.name || loadStoredName());
 }
 
 function applyTheme() {
@@ -468,6 +222,7 @@ function renderWithAchievements(options = {}) {
   });
 
   render();
+  persistState();
 
   if (!options.silent) {
     unlocked
@@ -831,7 +586,7 @@ function editHabit(habitId) {
   dom.habitName.focus();
 }
 
-async function deleteHabit(habitId) {
+function deleteHabit(habitId) {
   if (app.busy || !app.user) return;
 
   const habit = app.state.habits.find((item) => item.id === habitId);
@@ -840,28 +595,19 @@ async function deleteHabit(habitId) {
   const confirmed = window.confirm(`Delete "${habit.name}" and its completion history?`);
   if (!confirmed) return;
 
-  setBusy(true, "Deleting habit");
-
-  try {
-    await deleteHabitRow(supabase, app.user.id, habitId);
-    app.state.habits = app.state.habits.filter((item) => item.id !== habitId);
-    Object.keys(app.state.completions).forEach((dateKey) => {
-      delete app.state.completions[dateKey][habitId];
-      if (Object.keys(app.state.completions[dateKey]).length === 0) {
-        delete app.state.completions[dateKey];
-      }
-    });
-    resetHabitForm();
-    renderWithAchievements();
-    showToast("Habit deleted", `${habit.name} was removed.`);
-  } catch (error) {
-    showError(error, "Could not delete this habit.");
-  } finally {
-    setBusy(false);
-  }
+  app.state.habits = app.state.habits.filter((item) => item.id !== habitId);
+  Object.keys(app.state.completions).forEach((dateKey) => {
+    delete app.state.completions[dateKey][habitId];
+    if (Object.keys(app.state.completions[dateKey]).length === 0) {
+      delete app.state.completions[dateKey];
+    }
+  });
+  resetHabitForm();
+  renderWithAchievements();
+  showToast("Habit deleted", `${habit.name} was removed.`);
 }
 
-async function saveHabit(event) {
+function saveHabit(event) {
   event.preventDefault();
   if (app.busy || !app.user) return;
 
@@ -884,33 +630,36 @@ async function saveHabit(event) {
     return;
   }
 
-  setBusy(true, editingId ? "Updating habit" : "Creating habit");
+  const now = new Date().toISOString();
 
-  try {
-    if (editingId) {
-      const savedHabit = await updateHabitRow(supabase, app.user.id, {
-        id: editingId,
-        name,
-        icon,
-        color,
-      });
-
-      app.state.habits = app.state.habits.map((habit) => (habit.id === editingId ? savedHabit : habit));
-    } else {
-      const savedHabit = await createHabitRow(supabase, app.user.id, { name, icon, color });
-      app.state.habits.push(savedHabit);
-    }
-
-    resetHabitForm();
-    renderWithAchievements();
-  } catch (error) {
-    showError(error, "Could not save this habit.");
-  } finally {
-    setBusy(false);
+  if (editingId) {
+    app.state.habits = app.state.habits.map((habit) =>
+      habit.id === editingId
+        ? {
+            ...habit,
+            name,
+            icon,
+            color,
+            updatedAt: now,
+          }
+        : habit,
+    );
+  } else {
+    app.state.habits.push({
+      id: createId(),
+      name,
+      icon,
+      color,
+      createdAt: toDateKey(new Date()),
+      updatedAt: now,
+    });
   }
+
+  resetHabitForm();
+  renderWithAchievements();
 }
 
-async function addTemplate(templateName) {
+function addTemplate(templateName) {
   if (app.busy || !app.user) return;
 
   const template = STUDENT_TEMPLATES.find((item) => item.name === templateName);
@@ -919,44 +668,26 @@ async function addTemplate(templateName) {
   const exists = app.state.habits.some((habit) => habit.name.toLowerCase() === template.name.toLowerCase());
   if (exists) return;
 
-  setBusy(true, "Adding template");
-
-  try {
-    const savedHabit = await createHabitRow(supabase, app.user.id, template);
-    app.state.habits.push(savedHabit);
-    renderWithAchievements();
-    showToast("Template added", `${template.icon} ${template.name} is ready.`);
-  } catch (error) {
-    showError(error, "Could not add this template.");
-  } finally {
-    setBusy(false);
-  }
+  app.state.habits.push(createHabitFromTemplate(template));
+  renderWithAchievements();
+  showToast("Template added", `${template.icon} ${template.name} is ready.`);
 }
 
-async function toggleCompletion(habitId) {
+function toggleCompletion(habitId) {
   if (app.busy || !app.user) return;
 
   const dateKey = toDateKey(app.selectedDate);
   const wasComplete = isHabitComplete(app.state, habitId, dateKey);
   const nextValue = !wasComplete;
 
-  setBusy(true, "Saving completion");
+  setHabitCompletion(app.state, habitId, dateKey, nextValue);
+  const stats = getDayStats(app.state, dateKey);
+  renderWithAchievements();
 
-  try {
-    await setCompletionRow(supabase, app.user.id, habitId, dateKey, nextValue);
-    setHabitCompletion(app.state, habitId, dateKey, nextValue);
-    const stats = getDayStats(app.state, dateKey);
-    renderWithAchievements();
-
-    if (stats.total > 0 && stats.completed === stats.total && !app.celebratedPerfectDays.has(dateKey)) {
-      app.celebratedPerfectDays.add(dateKey);
-      showToast("Perfect day", "Every habit is complete for this date.");
-      burstConfetti();
-    }
-  } catch (error) {
-    showError(error, "Could not save this completion.");
-  } finally {
-    setBusy(false);
+  if (stats.total > 0 && stats.completed === stats.total && !app.celebratedPerfectDays.has(dateKey)) {
+    app.celebratedPerfectDays.add(dateKey);
+    showToast("Perfect day", "Every habit is complete for this date.");
+    burstConfetti();
   }
 }
 
@@ -969,7 +700,7 @@ function exportBackup() {
   link.download = `momentum-habit-backup-${toDateKey(new Date())}.json`;
   link.click();
   URL.revokeObjectURL(url);
-  showToast("Backup exported", "Your Supabase habit data backup is ready.");
+  showToast("Backup exported", "Your local habit data backup is ready.");
 }
 
 function importBackup(file) {
@@ -980,16 +711,16 @@ function importBackup(file) {
   reader.addEventListener("load", async () => {
     try {
       const parsed = JSON.parse(String(reader.result));
-      normalizeState(parsed);
-      const confirmed = window.confirm("Import this backup and replace current Supabase habit data?");
+      const importedState = normalizeState(parsed, app.state.settings);
+      const confirmed = window.confirm("Import this backup and replace current local habit data?");
       if (!confirmed) return;
 
       setBusy(true, "Importing backup");
-      app.state = await replaceUserStateFromBackup(supabase, app.user.id, parsed, app.state.settings);
+      app.state = importedState;
       app.viewDate = new Date();
       app.selectedDate = new Date();
       renderWithAchievements({ silent: true });
-      showToast("Backup imported", "Your previous habit data has been restored in Supabase.");
+      showToast("Backup imported", "Your previous habit data has been restored locally.");
     } catch (error) {
       showError(error, "Choose a valid Momentum JSON backup.");
     } finally {
@@ -1001,267 +732,23 @@ function importBackup(file) {
   reader.readAsText(file);
 }
 
-async function handleOAuthCallback() {
-  const callback = readOAuthCallback();
-  logAuthStep("callback:inspect", {
-    currentUrl: summarizeCurrentUrl(),
-    callback: summarizeOAuthCallback(callback),
-    redirect: getOAuthRedirectContext(),
-    pkce: readPkceStorageState(),
-  });
-
-  if (!callback.hasCallback) return null;
-
-  if (callback.error) {
-    logAuthStep("callback:provider-error", {
-      currentUrl: summarizeCurrentUrl(),
-      callback: summarizeOAuthCallback(callback),
-    });
-    clearOAuthCallbackFromUrl();
-    throw new Error(callback.errorDescription || callback.errorCode || callback.error);
-  }
-
-  if (callback.code) {
-    logAuthStep("callback:exchange-code:start", {
-      currentUrl: summarizeCurrentUrl(),
-      codeParameter: summarizeAuthValue(callback.code),
-      stateParameter: summarizeAuthValue(callback.state),
-      pkce: readPkceStorageState(),
-    });
-    const { data, error } = await supabase.auth.exchangeCodeForSession(callback.code);
-    logAuthStep("callback:exchange-code:result", {
-      hasError: Boolean(error),
-      error: error ? summarizeError(error) : null,
-      session: summarizeSession(data?.session),
-      redirectType: data?.redirectType || null,
-      pkce: readPkceStorageState(),
-    });
-    clearOAuthCallbackFromUrl();
-
-    if (error) {
-      logAuthError("callback:exchange-code:error", error);
-      throw error;
-    }
-
-    logAuthStep("callback:exchange-code:success", summarizeSession(data.session));
-    return data.session;
-  }
-
-  if (callback.accessToken && callback.refreshToken) {
-    logAuthStep("callback:set-hash-session:start", {
-      currentUrl: summarizeCurrentUrl(),
-      hasAccessToken: true,
-      hasRefreshToken: true,
-    });
-    const { data, error } = await supabase.auth.setSession({
-      access_token: callback.accessToken,
-      refresh_token: callback.refreshToken,
-    });
-    logAuthStep("callback:set-hash-session:result", {
-      hasError: Boolean(error),
-      error: error ? summarizeError(error) : null,
-      session: summarizeSession(data?.session),
-    });
-    clearOAuthCallbackFromUrl();
-
-    if (error) {
-      logAuthError("callback:set-hash-session:error", error);
-      throw error;
-    }
-
-    logAuthStep("callback:set-hash-session:success", summarizeSession(data.session));
-    return data.session;
-  }
-
-  clearOAuthCallbackFromUrl();
-  logAuthStep("callback:ignored", summarizeOAuthCallback(callback));
-  return null;
-}
-
-async function signInWithGoogle() {
-  if (!hasSupabaseConfig || !supabase) {
-    setAuthMessage("Missing SUPABASE_URL or SUPABASE_ANON_KEY. Add them to .env.local and Vercel.");
-    return;
-  }
-
-  const redirect = getOAuthRedirectContext();
-  const redirectTo = redirect.redirectTo;
-  const redirectOrigin = new URL(redirectTo).origin;
-
-  dom.googleSignIn.disabled = true;
-  dom.googleSignIn.querySelector("span").textContent = "Opening Google...";
-  setAuthMessage("Redirecting to Google...", false);
-  logAuthStep("oauth:sign-in:start", {
-    provider: "google",
-    currentUrl: summarizeCurrentUrl(),
-    redirect,
-    pkceBeforeSignIn: readPkceStorageState(),
-  });
-  if (redirectOrigin !== window.location.origin) {
-    logAuthStep("oauth:redirect-origin-mismatch", {
-      currentOrigin: window.location.origin,
-      redirectOrigin,
-      note: "PKCE requires the callback origin to have the stored code verifier.",
-    });
-  }
-
-  const { data, error } = await supabase.auth.signInWithOAuth({
-    provider: "google",
-    options: {
-      redirectTo,
-      queryParams: {
-        prompt: "select_account",
-      },
-    },
-  });
-
-  if (error) {
-    resetGoogleSignInButton();
-    logAuthError("oauth:sign-in:error", error, { redirect });
-    setAuthMessage(error.message);
-    return;
-  }
-
-  logAuthStep("oauth:sign-in:authorize-url", {
-    redirect,
-    authorizeUrl: summarizeAuthorizeUrl(data?.url, redirectTo),
-    pkceAfterSignIn: readPkceStorageState(),
-  });
-
-  if (!data?.url) {
-    resetGoogleSignInButton();
-    logAuthError("oauth:sign-in:missing-provider-url", new Error("Supabase did not return an OAuth URL."), {
-      redirect,
-    });
-    setAuthMessage("Supabase did not return a Google sign-in URL. Please try again.");
-    return;
-  }
-}
-
-async function signOut() {
-  if (!supabase) return;
-
-  setBusy(true, "Signing out");
-  logAuthStep("sign-out:start", summarizeSession({ user: app.user }));
-
-  try {
-    const { error } = await supabase.auth.signOut();
-    if (error) throw error;
-    logAuthStep("sign-out:success");
-    showLogin("");
-  } catch (error) {
-    logAuthError("sign-out:error", error);
-    showError(error, "Could not sign out.");
-  } finally {
-    setBusy(false);
-  }
-}
-
-async function loadProtectedApp(session, source = "unknown") {
-  logAuthStep("load-protected:start", { source, session: summarizeSession(session) });
-
-  if (!session?.user) {
-    logAuthStep("load-protected:no-session", { source });
-    showLogin("");
-    return;
-  }
-
-  if (app.authLoadUserId === session.user.id && dom.body.classList.contains("authenticated")) {
-    logAuthStep("load-protected:skip-existing-user", { source, userId: session.user.id });
-    return;
-  }
-
-  app.authLoadUserId = session.user.id;
-  app.user = session.user;
-  showApp();
-  renderUser();
-  setBusy(true, "Loading your habits");
-
-  try {
-    app.state = await ensureStarterHabits(supabase, app.user.id, app.state.settings);
-    renderWithAchievements({ silent: true });
-    logAuthStep("load-protected:success", { source, userId: app.user.id });
-  } catch (error) {
-    app.state = createEmptyState(app.state.settings);
-    renderWithAchievements({ silent: true });
-    logAuthError("load-protected:data-error", error, { source, userId: app.user.id });
-    showError(error, "Could not load your Supabase habit data.");
-  } finally {
-    setBusy(false);
-  }
-}
-
-async function initAuth() {
+function initApp() {
+  app.state = loadStoredState({ theme: initialTheme });
   applyTheme();
   refreshIcons();
-  logAuthStep("init:start", {
-    currentUrl: summarizeCurrentUrl(),
-    supabase: describeSupabaseClientConfig(),
-    callback: summarizeOAuthCallback(readOAuthCallback()),
-    redirect: getOAuthRedirectContext(),
-    pkce: readPkceStorageState(),
-  });
 
-  if (!hasSupabaseConfig || !supabase) {
-    logAuthStep("init:missing-config", describeSupabaseClientConfig());
-    showLogin("Missing SUPABASE_URL or SUPABASE_ANON_KEY. Add them to .env.local and Vercel.");
+  const storedName = loadStoredName();
+  if (storedName) {
+    openDashboard(storedName);
     return;
   }
 
-  const {
-    data: { subscription },
-  } = supabase.auth.onAuthStateChange((event, session) => {
-    logAuthStep("auth-state-change", {
-      event,
-      session: summarizeSession(session),
-    });
-
-    if (event === "INITIAL_SESSION" || event === "TOKEN_REFRESHED" || event === "USER_UPDATED") {
-      if (session?.user) {
-        app.user = session.user;
-        if (dom.body.classList.contains("authenticated")) renderUser();
-      }
-      return;
-    }
-
-    if (event === "SIGNED_OUT" || !session?.user) {
-      showLogin("");
-      return;
-    }
-
-    void loadProtectedApp(session, `auth-state:${event}`);
-  });
-  logAuthStep("auth-state:subscribed", { hasSubscription: Boolean(subscription) });
-
-  setBusy(true, "Checking session");
-
-  try {
-    const callbackSession = await handleOAuthCallback();
-    if (callbackSession?.user) {
-      await loadProtectedApp(callbackSession, "oauth-callback");
-      return;
-    }
-
-    logAuthStep("session:get:start");
-    const { data, error } = await supabase.auth.getSession();
-    if (error) throw error;
-    logAuthStep("session:get:result", {
-      hasError: Boolean(error),
-      error: error ? summarizeError(error) : null,
-      session: summarizeSession(data.session),
-    });
-    await loadProtectedApp(data.session, "getSession");
-  } catch (error) {
-    logAuthError("init:error", error);
-    showLogin(error?.message || "Could not read your session. Please sign in again.");
-  } finally {
-    setBusy(false);
-  }
+  showWelcome();
 }
 
 function bindEvents() {
-  dom.googleSignIn.addEventListener("click", signInWithGoogle);
-  dom.logoutButton.addEventListener("click", signOut);
+  dom.welcomeForm.addEventListener("submit", handleWelcomeSubmit);
+  dom.changeNameButton.addEventListener("click", showNameEditor);
 
   dom.prevMonth.addEventListener("click", () => {
     app.viewDate = addMonths(app.viewDate, -1);
@@ -1292,7 +779,7 @@ function bindEvents() {
     const actionButton = event.target.closest("[data-action]");
     if (!actionButton) return;
 
-    if (actionButton.dataset.action === "toggle") void toggleCompletion(actionButton.dataset.id);
+    if (actionButton.dataset.action === "toggle") toggleCompletion(actionButton.dataset.id);
     if (actionButton.dataset.action === "edit") editHabit(actionButton.dataset.id);
   });
 
@@ -1301,7 +788,7 @@ function bindEvents() {
     if (!actionButton) return;
 
     if (actionButton.dataset.action === "edit") editHabit(actionButton.dataset.id);
-    if (actionButton.dataset.action === "delete") void deleteHabit(actionButton.dataset.id);
+    if (actionButton.dataset.action === "delete") deleteHabit(actionButton.dataset.id);
   });
 
   dom.habitForm.addEventListener("submit", saveHabit);
@@ -1314,7 +801,7 @@ function bindEvents() {
 
   dom.templateGrid.addEventListener("click", (event) => {
     const templateButton = event.target.closest("[data-template]");
-    if (templateButton) void addTemplate(templateButton.dataset.template);
+    if (templateButton) addTemplate(templateButton.dataset.template);
   });
 
   dom.searchHabits.addEventListener("input", render);
@@ -1323,6 +810,7 @@ function bindEvents() {
   dom.themeToggle.addEventListener("click", () => {
     app.state.settings.theme = app.state.settings.theme === "dark" ? "light" : "dark";
     render();
+    persistState();
   });
 
   dom.exportButton.addEventListener("click", exportBackup);
@@ -1334,6 +822,4 @@ function bindEvents() {
 }
 
 bindEvents();
-resetHabitForm();
-render();
-void initAuth();
+initApp();
