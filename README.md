@@ -41,3 +41,24 @@ npm run preview
 ## Data Storage
 
 The app stores the entered name and habit state in the browser. Export and import JSON backups from the dashboard if you want to move data between browsers or devices.
+# Habit Tracker
+
+Live Demo:
+https://habit-tracker-vert-two-23.vercel.app/
+
+## Features
+- Create and manage habits
+- Mark habits completed daily
+- Progress tracking
+- Local browser storage
+- Responsive design
+
+## Tech Stack
+- HTML
+- CSS
+- JavaScript
+- Vite
+- Vercel
+
+## Repository
+http://habit-tracker-vert-two-23.vercel.app/
