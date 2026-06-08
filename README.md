@@ -61,4 +61,4 @@ https://habit-tracker-vert-two-23.vercel.app/
 - Vercel
 
 ## Repository
-http://habit-tracker-vert-two-23.vercel.app/
+https://github.com/Nirupamasadu/habit-tracker
